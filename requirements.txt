@@ -1,7 +1,5 @@
 fastapi
 uvicorn
-pandas>=2.0.0
-pandasai==2.3.2
 python-dotenv
 openai
-setuptools
+pandasai==2.3.2
