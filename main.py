@@ -63,11 +63,10 @@ async def ask_aje(request: QueryRequest):
         if not os.path.exists(charts_path):
             os.makedirs(charts_path)
         
-        # Borrar cualquier png viejo para no enviar el gráfico de la pregunta anterior
         for f in glob.glob(f"{charts_path}/*.png"):
             os.remove(f)
 
-        # Configuración del Agente con instrucciones forzadas para gráficos
+        # AGENTE REFORZADO: Añadimos instrucciones explícitas para NO usar solo SQL
         agent = Agent(
             df, 
             config={
@@ -76,17 +75,17 @@ async def ask_aje(request: QueryRequest):
                 "save_charts_path": charts_path,
                 "cache": False,
                 "verbose": True,
-                "custom_instructions": "If the user asks for a chart, graph or plot, you MUST generate it and save it as a PNG file in the exports folder. Do not just describe the data visually with text."
+                "custom_instructions": "If the user asks for a chart, graph, bar chart or plot, you MUST use matplotlib to generate it and save it. Do not just return the data or SQL query."
             }
         )
 
-        # Refuerzo del prompt: si detectamos intención de graficar, forzamos la instrucción
-        final_prompt = request.prompt
-        if any(word in final_prompt.lower() for word in ["gráfico", "grafica", "plot", "dibujar", "visualiza"]):
-            final_prompt += " (IMPORTANT: Generate the actual plot image file)"
+        # REFUERZO DE PROMPT: Si detectamos intención de graficar, inyectamos la orden técnica
+        user_prompt = request.prompt
+        if any(word in user_prompt.lower() for word in ["gráfico", "grafica", "barras", "dibujar", "visualiza"]):
+            user_prompt += ". Importante: Genera un gráfico de barras usando matplotlib y guárdalo."
 
-        print(f"LOG: Procesando prompt: {final_prompt}")
-        answer = agent.chat(final_prompt)
+        print(f"LOG: Procesando prompt: {user_prompt}")
+        answer = agent.chat(user_prompt)
         
         # 5. Lógica de detección de gráficos dinámica
         chart_url = None
