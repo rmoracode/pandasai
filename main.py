@@ -3,7 +3,7 @@ import pandas as pd
 import requests
 import base64
 import matplotlib
-matplotlib.use('Agg') # Para que funcione en servidor
+matplotlib.use('Agg') # Crucial para servidores
 import matplotlib.pyplot as plt
 from fastapi import FastAPI
 from pydantic import BaseModel
@@ -14,13 +14,12 @@ from dotenv import load_dotenv
 load_dotenv()
 app = FastAPI()
 
-# 1. Carga de datos
+# --- CARGA Y LIMPIEZA DE DATOS ---
 try:
     df = pd.read_csv('fuente.csv', sep=';')
 except Exception:
     df = pd.read_csv('fuente.csv', sep=',', encoding='latin1')
 
-# Limpieza de VN y Vol
 for col in ['VN', 'Vol']:
     if col in df.columns:
         df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
@@ -40,38 +39,50 @@ def upload_to_imgbb(image_path):
 class QueryRequest(BaseModel):
     prompt: str
 
+# RUTA 1: Texto (Sin cambios, ya funciona)
 @app.post("/ask")
 async def ask_texto(request: QueryRequest):
     agent = Agent(df, config={"llm": llm_instance, "save_charts": False})
     answer = agent.chat(request.prompt)
     return {"response": str(answer)}
 
+# RUTA 2: Gráfico Automático (Tu idea aplicada)
 @app.post("/chart")
 async def ask_grafico(request: QueryRequest):
     try:
-        # PASO A: La IA solo extrae los datos (No piensa en el gráfico)
+        # 1. Le pedimos a la IA SOLO los datos en formato tabla
         agent = Agent(df, config={"llm": llm_instance, "save_charts": False})
-        data_query = f"Devuelve solo una tabla con los datos de: {request.prompt}"
+        data_query = f"Extrae los datos necesarios para: {request.prompt}. Devuelve solo la tabla de resultados."
         data = agent.chat(data_query)
 
-        if not isinstance(data, pd.DataFrame):
-            return {"chart_url": None, "detail": "No se pudieron extraer datos para graficar."}
+        # 2. Si la IA devuelve un DataFrame (que es lo que hace cuando filtra datos)
+        if isinstance(data, pd.DataFrame):
+            # Limpiamos figuras previas
+            plt.clf() 
+            plt.figure(figsize=(10, 6))
+            
+            # Dibujamos automáticamente: X es la primera columna, Y es la segunda
+            col_x = data.columns[0]
+            col_y = data.columns[1]
+            
+            # Ordenamos para que el gráfico se vea profesional
+            data = data.sort_values(by=col_y, ascending=False).head(10) # Top 10 para no saturar
+            
+            plt.bar(data[col_x].astype(str), data[col_y], color='#00aaff')
+            plt.title(f"Análisis Automático: {request.prompt}", fontsize=14)
+            plt.xticks(rotation=45, ha='right')
+            plt.grid(axis='y', linestyle='--', alpha=0.7)
+            plt.tight_layout()
 
-        # PASO B: Generación automática (Sin que la IA intervenga aquí)
-        plt.figure(figsize=(10, 6))
-        # Usamos la primera columna para X y la segunda para Y automáticamente
-        plt.bar(data.iloc[:, 0].astype(str), data.iloc[:, 1], color='#e63946')
-        plt.title(f"Análisis de {request.prompt}")
-        plt.xticks(rotation=45)
-        plt.tight_layout()
+            # Guardado forzado
+            file_path = "auto_chart.png"
+            plt.savefig(file_path)
+            plt.close()
 
-        file_path = "temp_chart.png"
-        plt.savefig(file_path)
-        plt.close()
-
-        # PASO C: Subir y entregar
-        url = upload_to_imgbb(file_path)
-        return {"chart_url": url, "response": "Gráfico generado automáticamente."}
+            url = upload_to_imgbb(file_path)
+            return {"chart_url": url, "detail": "Gráfico generado por motor directo"}
+        
+        return {"chart_url": None, "detail": "La IA no devolvió una tabla de datos válida."}
 
     except Exception as e:
         return {"chart_url": None, "error": str(e)}
