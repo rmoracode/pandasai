@@ -2,6 +2,7 @@ import os
 import pandas as pd
 import requests
 import base64
+import glob
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from pandasai import Agent
@@ -26,10 +27,11 @@ for col in ['VN', 'Vol']:
 # 3. Configuración del LLM
 llm_instance = OpenAI(api_token=os.getenv("OPENAI_API_KEY"), model="gpt-4o-mini")
 
-# Función auxiliar para subir imágenes a ImgBB
+# Función auxiliar para subir imágenes a ImgBB con logs detallados
 def upload_to_imgbb(image_path):
     api_key = os.getenv("IMGBB_API_KEY")
     if not api_key:
+        print("LOG: Error - Falta la variable IMGBB_API_KEY")
         return None
     try:
         with open(image_path, "rb") as file:
@@ -39,9 +41,15 @@ def upload_to_imgbb(image_path):
                 "image": base64.b64encode(file.read()),
             }
             res = requests.post(url, payload)
-            return res.json()["data"]["url"]
+            res_json = res.json()
+            if res_json.get("success"):
+                print(f"LOG: Imagen subida con éxito: {res_json['data']['url']}")
+                return res_json["data"]["url"]
+            else:
+                print(f"LOG: Error de ImgBB: {res_json}")
+                return None
     except Exception as e:
-        print(f"Error subiendo imagen: {e}")
+        print(f"LOG: Error subiendo imagen: {e}")
         return None
 
 class QueryRequest(BaseModel):
@@ -50,32 +58,39 @@ class QueryRequest(BaseModel):
 @app.post("/ask")
 async def ask_aje(request: QueryRequest):
     try:
-        # 4. Creamos el Agente configurado para guardar gráficos
-        # Usamos una subcarpeta 'exports' para los gráficos
-        # Crear carpeta de exportación si no existe
-        if not os.path.exists("exports"):
-            os.makedirs("exports")
+        # 4. Preparación de carpeta y limpieza de basura anterior
+        charts_path = "exports"
+        if not os.path.exists(charts_path):
+            os.makedirs(charts_path)
+        
+        # Borrar cualquier png viejo para no enviar el gráfico de la pregunta anterior
+        for f in glob.glob(f"{charts_path}/*.png"):
+            os.remove(f)
+
         agent = Agent(
             df, 
             config={
                 "llm": llm_instance,
                 "save_charts": True,
-                "save_charts_path": "exports",
-                "cache": False # Recomendado para datos que cambian
+                "save_charts_path": charts_path,
+                "cache": False
             }
         )
 
-        # Ejecutamos la consulta
+        print(f"LOG: Procesando prompt: {request.prompt}")
         answer = agent.chat(request.prompt)
         
-        # 5. Lógica de detección de gráficos
+        # 5. Lógica de detección de gráficos dinámica
         chart_url = None
-        # PandasAI suele guardar el último gráfico como temp_chart.png o similar en la ruta especificada
-        chart_filename = "exports/temp_chart.png" 
+        # Buscamos cualquier archivo .png que PandasAI haya creado
+        generated_files = glob.glob(f"{charts_path}/*.png")
         
-        if os.path.exists(chart_filename):
-            chart_url = upload_to_imgbb(chart_filename)
-            os.remove(chart_filename) # Borramos el archivo local para no acumular basura
+        if generated_files:
+            print(f"LOG: Gráfico generado encontrado en: {generated_files[0]}")
+            chart_url = upload_to_imgbb(generated_files[0])
+            # No borramos el archivo inmediatamente para asegurar que la subida termine
+        else:
+            print("LOG: PandasAI no generó ningún archivo de imagen para este prompt.")
 
         return {
             "response": str(answer),
@@ -83,8 +98,8 @@ async def ask_aje(request: QueryRequest):
         }
 
     except Exception as e:
-        print(f"Error detectado: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        print(f"LOG: Error detectado: {e}")
+        return {"response": f"Error interno: {str(e)}", "chart_url": None}
 
 if __name__ == "__main__":
     import uvicorn
