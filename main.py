@@ -52,6 +52,9 @@ async def ask_aje(request: QueryRequest):
     try:
         # 4. Creamos el Agente configurado para guardar gráficos
         # Usamos una subcarpeta 'exports' para los gráficos
+        # Crear carpeta de exportación si no existe
+        if not os.path.exists("exports"):
+            os.makedirs("exports")
         agent = Agent(
             df, 
             config={
