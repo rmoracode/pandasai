@@ -67,28 +67,34 @@ async def ask_aje(request: QueryRequest):
         for f in glob.glob(f"{charts_path}/*.png"):
             os.remove(f)
 
+        # Configuración del Agente con instrucciones forzadas para gráficos
         agent = Agent(
             df, 
             config={
                 "llm": llm_instance,
                 "save_charts": True,
                 "save_charts_path": charts_path,
-                "cache": False
+                "cache": False,
+                "verbose": True,
+                "custom_instructions": "If the user asks for a chart, graph or plot, you MUST generate it and save it as a PNG file in the exports folder. Do not just describe the data visually with text."
             }
         )
 
-        print(f"LOG: Procesando prompt: {request.prompt}")
-        answer = agent.chat(request.prompt)
+        # Refuerzo del prompt: si detectamos intención de graficar, forzamos la instrucción
+        final_prompt = request.prompt
+        if any(word in final_prompt.lower() for word in ["gráfico", "grafica", "plot", "dibujar", "visualiza"]):
+            final_prompt += " (IMPORTANT: Generate the actual plot image file)"
+
+        print(f"LOG: Procesando prompt: {final_prompt}")
+        answer = agent.chat(final_prompt)
         
         # 5. Lógica de detección de gráficos dinámica
         chart_url = None
-        # Buscamos cualquier archivo .png que PandasAI haya creado
         generated_files = glob.glob(f"{charts_path}/*.png")
         
         if generated_files:
             print(f"LOG: Gráfico generado encontrado en: {generated_files[0]}")
             chart_url = upload_to_imgbb(generated_files[0])
-            # No borramos el archivo inmediatamente para asegurar que la subida termine
         else:
             print("LOG: PandasAI no generó ningún archivo de imagen para este prompt.")
 
