@@ -4,3 +4,4 @@ pandas
 pandasai
 pandasai-openai
 python-dotenv
+requests
