@@ -2,9 +2,8 @@ import os
 import pandas as pd
 import requests
 import base64
-import glob
 import matplotlib
-matplotlib.use('Agg') # Obligatorio para servidores sin pantalla
+matplotlib.use('Agg') # Para que funcione en servidor
 import matplotlib.pyplot as plt
 from fastapi import FastAPI
 from pydantic import BaseModel
@@ -15,12 +14,13 @@ from dotenv import load_dotenv
 load_dotenv()
 app = FastAPI()
 
-# --- CARGA Y LIMPIEZA ---
+# 1. Carga de datos
 try:
     df = pd.read_csv('fuente.csv', sep=';')
 except Exception:
     df = pd.read_csv('fuente.csv', sep=',', encoding='latin1')
 
+# Limpieza de VN y Vol
 for col in ['VN', 'Vol']:
     if col in df.columns:
         df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
@@ -42,60 +42,38 @@ class QueryRequest(BaseModel):
 
 @app.post("/ask")
 async def ask_texto(request: QueryRequest):
-    try:
-        agent = Agent(df, config={"llm": llm_instance, "save_charts": False})
-        answer = agent.chat(request.prompt)
-        return {"response": str(answer)}
-    except Exception as e:
-        return {"response": f"Error: {str(e)}"}
+    agent = Agent(df, config={"llm": llm_instance, "save_charts": False})
+    answer = agent.chat(request.prompt)
+    return {"response": str(answer)}
 
 @app.post("/chart")
 async def ask_grafico(request: QueryRequest):
     try:
-        # Forzamos la creación absoluta de la carpeta
-        charts_path = os.path.join(os.getcwd(), "exports")
-        if not os.path.exists(charts_path):
-            os.makedirs(charts_path, exist_ok=True)
-        
-        # Limpieza total de basura previa
-        for f in glob.glob(os.path.join(charts_path, "*.png")):
-            os.remove(f)
+        # PASO A: La IA solo extrae los datos (No piensa en el gráfico)
+        agent = Agent(df, config={"llm": llm_instance, "save_charts": False})
+        data_query = f"Devuelve solo una tabla con los datos de: {request.prompt}"
+        data = agent.chat(data_query)
 
-        # Configuración de Agente con modo 'verbose' para ver fallos en logs
-        agent = Agent(
-            df, 
-            config={
-                "llm": llm_instance, 
-                "save_charts": True, 
-                "save_charts_path": charts_path,
-                "verbose": True
-            }
-        )
-        
-        # Prompt técnico para obligar a usar matplotlib y guardar
-        instruccion = (
-            f"Usando matplotlib, genera un gráfico de barras de {request.prompt}. "
-            f"Es obligatorio que el gráfico se guarde como un archivo PNG en la carpeta {charts_path}."
-        )
-        
-        print(f"LOG: Intentando generar gráfico en {charts_path}...")
-        agent.chat(instruccion)
-        
-        # Verificación manual del archivo
-        generated_files = glob.glob(os.path.join(charts_path, "*.png"))
-        
-        if generated_files:
-            # Ordenamos por fecha para enviar el más reciente
-            latest_file = max(generated_files, key=os.path.getctime)
-            print(f"LOG: ¡Archivo encontrado!: {latest_file}")
-            url = upload_to_imgbb(latest_file)
-            return {"chart_url": url, "detail": "Gráfico generado con éxito"}
-        
-        print("LOG ERROR: PandasAI terminó pero el archivo no existe en el disco.")
-        return {"chart_url": None, "detail": "La IA procesó pero el archivo no se escribió en disco."}
+        if not isinstance(data, pd.DataFrame):
+            return {"chart_url": None, "detail": "No se pudieron extraer datos para graficar."}
+
+        # PASO B: Generación automática (Sin que la IA intervenga aquí)
+        plt.figure(figsize=(10, 6))
+        # Usamos la primera columna para X y la segunda para Y automáticamente
+        plt.bar(data.iloc[:, 0].astype(str), data.iloc[:, 1], color='#e63946')
+        plt.title(f"Análisis de {request.prompt}")
+        plt.xticks(rotation=45)
+        plt.tight_layout()
+
+        file_path = "temp_chart.png"
+        plt.savefig(file_path)
+        plt.close()
+
+        # PASO C: Subir y entregar
+        url = upload_to_imgbb(file_path)
+        return {"chart_url": url, "response": "Gráfico generado automáticamente."}
 
     except Exception as e:
-        print(f"LOG CRASH: {str(e)}")
         return {"chart_url": None, "error": str(e)}
 
 if __name__ == "__main__":
