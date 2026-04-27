@@ -5,14 +5,14 @@ import base64
 import glob
 from fastapi import FastAPI
 from pydantic import BaseModel
-from pandasai import SmartDataframe # <-- CLAVE: Usamos exactamente lo que usas en Streamlit
-from pandasai.llm import OpenAI
+from pandasai import SmartDataframe 
+from pandasai_openai import OpenAI  # <--- CORRECCIÓN: Volvemos a la importación que funciona en tu Railway
 from dotenv import load_dotenv
 
 load_dotenv()
 app = FastAPI()
 
-# 1. Carga de datos igual que en tu Streamlit
+# 1. Carga de datos
 try:
     df = pd.read_csv('fuente.csv', sep=';')
 except Exception:
@@ -22,6 +22,7 @@ for col in ['VN', 'Vol']:
     if col in df.columns:
         df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
 
+# Configuración del LLM
 llm_instance = OpenAI(api_token=os.getenv("OPENAI_API_KEY"), model="gpt-4o-mini")
 
 # Función para subir la imagen generada a ImgBB
@@ -47,7 +48,7 @@ async def ask_texto(request: QueryRequest):
     response = agent.chat(request.prompt)
     return {"response": str(response)}
 
-# --- RUTA 2: GRÁFICOS (Modo Streamlit) ---
+# --- RUTA 2: GRÁFICOS (Lógica exacta de Streamlit) ---
 @app.post("/chart")
 async def ask_grafico(request: QueryRequest):
     try:
