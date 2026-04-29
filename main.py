@@ -7,24 +7,24 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 from pandasai import SmartDataframe 
 from pandasai_openai import OpenAI 
-from pandasai.connectors import PostgreSQLConnector # <-- NUEVO
+from sqlalchemy import create_engine # <-- CAMBIO SEGURO
 from dotenv import load_dotenv
 
 load_dotenv()
 app = FastAPI()
 
-# 1. Configuración del Conector a Postgres (Hostinger)
-# Sustituimos pd.read_csv por este conector inteligente
-db_connector = PostgreSQLConnector(config={
-    "host": "72.61.2.146",
-    "port": 5432,
-    "database": "ventas_aje",
-    "username": "postgres",
-    "password": os.getenv("PG_PASSWORD"),
-    "table": "ventas" # Asegúrate de que este sea el nombre de tu tabla
-})
+# 1. Configuración del Motor de Base de Datos (SQLAlchemy)
+# Reemplazamos el conector problemático por una conexión directa
+user = "postgres"
+password = os.getenv("PG_PASSWORD")
+host = "72.61.2.146"
+port = "5432"
+db = "ventas_aje"
 
-# El LLM se mantiene igual
+# Creamos la URL de conexión
+db_url = f"postgresql://{user}:{password}@{host}:{port}/{db}"
+engine = create_engine(db_url) # Este motor es el que leerá las tablas
+
 llm_instance = OpenAI(api_token=os.getenv("OPENAI_API_KEY"), model="gpt-4o-mini")
 
 def upload_to_imgbb(image_path):
@@ -44,8 +44,9 @@ class QueryRequest(BaseModel):
 
 @app.post("/ask")
 async def ask_texto(request: QueryRequest):
-    # Ahora pasamos db_connector en lugar de df
-    agent = SmartDataframe(db_connector, config={"llm": llm_instance, "enable_cache": False})
+    # Le pasamos el motor de SQLAlchemy y el nombre de la tabla
+    agent = SmartDataframe(engine, config={"llm": llm_instance, "enable_cache": False})
+    # Importante: Si la tabla no se llama 'ventas', cámbiala aquí o dile a la IA qué tabla usar
     response = agent.chat(request.prompt)
     return {"response": str(response)}
 
@@ -55,9 +56,8 @@ async def ask_grafico(request: QueryRequest):
         charts_dir = os.path.join(os.getcwd(), "exports", "charts")
         os.makedirs(charts_dir, exist_ok=True)
 
-        # Configuramos el agente con el conector de base de datos
         agent = SmartDataframe(
-            db_connector, 
+            engine, 
             config={
                 "llm": llm_instance,
                 "save_charts": True,
