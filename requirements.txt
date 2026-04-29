@@ -3,5 +3,7 @@ uvicorn
 pandas
 pandasai
 pandasai-openai
-python-dotenv
+psycopg2-binary
+sqlalchemy
 requests
+python-dotenv
