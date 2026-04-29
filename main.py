@@ -13,17 +13,18 @@ from dotenv import load_dotenv
 load_dotenv()
 app = FastAPI()
 
-# 1. Configuración de Base de Datos
+# 1. Configuración del Motor de Base de Datos (SQLAlchemy)
 user = "postgres"
 password = os.getenv("PG_PASSWORD")
 host = "72.61.2.146"
 port = "5432"
 db = "ventas_aje"
 
+# Creamos la URL de conexión robusta
 db_url = f"postgresql://{user}:{password}@{host}:{port}/{db}"
 engine = create_engine(db_url)
 
-# Instancia del LLM
+# Instancia del LLM (GPT-4o-mini es excelente para esto)
 llm_instance = OpenAI(api_token=os.getenv("OPENAI_API_KEY"), model="gpt-4o-mini")
 
 def upload_to_imgbb(image_path):
@@ -41,35 +42,17 @@ def upload_to_imgbb(image_path):
 class QueryRequest(BaseModel):
     prompt: str
 
-def get_prepared_df(query):
-    # Cargamos datos usando el filtro SQL directamente para optimizar
-    df = pd.read_sql(query, engine)
-    
-    # Normalización de sucursales a MAYÚSCULAS para que coincidan con el prompt
-    if 'desc_sucursal' in df.columns:
-        df['desc_sucursal'] = df['desc_sucursal'].astype(str).str.upper().str.strip()
-    
-    # Convertimos la columna fecha a datetime de Pandas (Formato M/D/YYYY)
-    if 'fecha' in df.columns:
-        df['fecha'] = pd.to_datetime(df['fecha'], errors='coerce')
-        
-    return df
-
 @app.post("/ask")
 async def ask_texto(request: QueryRequest):
     try:
-        # Filtro directo para Marzo 2026 en formato M/D/YYYY
-        query = "SELECT * FROM ventas WHERE fecha LIKE '3/%/2026'"
-        df = get_prepared_df(query)
+        # PRECARGA CRÍTICA: Traemos los datos de la tabla 'ventas' a un DataFrame de Pandas
+        # Esto soluciona el ValueError: Invalid input data
+        df = pd.read_sql("SELECT * FROM ventas", engine)
         
-        if df.empty:
-            return {"response": "No se encontraron datos para los filtros aplicados."}
-
-        # Usar el DataFrame precargado evita el error de SQLAlchemy
+        # Inicializamos el agente con el DataFrame ya cargado
         agent = SmartDataframe(df, config={"llm": llm_instance, "enable_cache": False})
         
-        instruccion = f"{request.prompt}. Nota: Las sucursales están en MAYÚSCULAS."
-        response = agent.chat(instruccion)
+        response = agent.chat(request.prompt)
         return {"response": str(response)}
     except Exception as e:
         return {"response": f"Error en el servidor: {str(e)}"}
@@ -80,9 +63,8 @@ async def ask_grafico(request: QueryRequest):
         charts_dir = os.path.join(os.getcwd(), "exports", "charts")
         os.makedirs(charts_dir, exist_ok=True)
 
-        # Precarga filtrada para gráficos rápidos y sin errores de conexión
-        query = "SELECT * FROM ventas WHERE fecha LIKE '3/%/2026'"
-        df = get_prepared_df(query)
+        # Precarga de datos para asegurar el flujo de gráficos
+        df = pd.read_sql("SELECT * FROM ventas", engine)
 
         agent = SmartDataframe(
             df, 
@@ -94,15 +76,12 @@ async def ask_grafico(request: QueryRequest):
             }
         )
 
+        # Limpieza de gráficos anteriores
         for f in glob.glob(os.path.join(charts_dir, "*.png")):
             os.remove(f)
 
-        # Forzamos el tipo de gráfico (pie, line, bar) solicitado
-        instruccion_forzada = (
-            f"{request.prompt}. "
-            "IMPORTANTE: Usa estrictamente el tipo de gráfico solicitado (ej. pastel = plt.pie, líneas = plt.plot). "
-            "Las sucursales están en MAYÚSCULAS. Guarda como .png."
-        )
+        # Forzamos la instrucción técnica para matplotlib
+        instruccion_forzada = f"{request.prompt}. Es obligatorio usar matplotlib y guardar el archivo .png"
         agent.chat(instruccion_forzada)
         
         generated_files = glob.glob(os.path.join(charts_dir, "*.png"))
@@ -119,5 +98,5 @@ async def ask_grafico(request: QueryRequest):
 
 if __name__ == "__main__":
     import uvicorn
-    # Puerto dinámico para Railway
+    # Railway usa la variable de entorno PORT
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
