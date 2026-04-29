@@ -81,7 +81,11 @@ async def ask_grafico(request: QueryRequest):
             os.remove(f)
 
         # Forzamos la instrucción técnica para matplotlib
-        instruccion_forzada = f"{request.prompt}. Es obligatorio usar matplotlib y guardar el archivo .png"
+        instruccion_forzada = (
+            f"{request.prompt}. "
+            "IMPORTANTE: Debes usar estrictamente el tipo de gráfico solicitado (ej. si pide pastel usa plt.pie, si pide líneas usa plt.plot). "
+            "Usa matplotlib y guarda obligatoriamente el archivo como .png."
+        )
         agent.chat(instruccion_forzada)
         
         generated_files = glob.glob(os.path.join(charts_dir, "*.png"))
