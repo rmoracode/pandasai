@@ -47,7 +47,7 @@ async def ask_texto(request: QueryRequest):
     try:
         # PRECARGA CRÍTICA: Traemos los datos de la tabla 'ventas' a un DataFrame de Pandas
         # Esto soluciona el ValueError: Invalid input data
-        df = pd.read_sql("SELECT * FROM ventas", engine)
+        df = pd.read_sql("SELECT * FROM ventas WHERE fecha LIKE '3/%/2026'", engine)
         
         # Inicializamos el agente con el DataFrame ya cargado
         agent = SmartDataframe(df, config={"llm": llm_instance, "enable_cache": False})
