@@ -83,14 +83,8 @@ async def ask_grafico(request: QueryRequest):
         # Forzamos la instrucción técnica para matplotlib
         instruccion_forzada = (
             f"{request.prompt}. "
-            "REGLAS DE VISUALIZACIÓN: "
-            "1. Usa estrictamente el tipo de gráfico solicitado por el usuario. "
-            "2. Si pide 'pastel', usa plt.pie(). "
-            "3. Si pide 'líneas', usa plt.plot(). "
-            "4. Si pide 'área', usa plt.fill_between() o df.plot.area(). "
-            "5. Si pide 'barras', usa plt.bar(). "
-            "6. Si pide 'dispersión', usa plt.scatter(). "
-            "Es obligatorio usar matplotlib y guardar el archivo como .png."
+            "IMPORTANTE: Debes usar estrictamente el tipo de gráfico solicitado (ej. si pide pastel usa plt.pie, si pide líneas usa plt.plot). "
+            "Usa matplotlib y guarda obligatoriamente el archivo como .png."
         )
         agent.chat(instruccion_forzada)
         
