@@ -48,6 +48,10 @@ async def ask_texto(request: QueryRequest):
         # PRECARGA CRÍTICA: Traemos los datos de la tabla 'ventas' a un DataFrame de Pandas
         # Esto soluciona el ValueError: Invalid input data
         df = pd.read_sql("SELECT * FROM ventas", engine)
+
+        # 2. CORRECCIÓN DE FECHA: Convertimos el texto a objeto datetime de Pandas
+        # Usamos dayfirst=True porque tu formato es D/M/YYYY
+        df['fecha'] = pd.to_datetime(df['fecha'], dayfirst=True, errors='coerce')
         
         # Inicializamos el agente con el DataFrame ya cargado
         agent = SmartDataframe(df, config={"llm": llm_instance, "enable_cache": False})
