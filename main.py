@@ -6,8 +6,6 @@ import pandas as pd
 from sqlalchemy import create_engine, text
 from fastapi import FastAPI
 from pydantic import BaseModel
-from pandasai import Agent
-from pandasai_openai import OpenAI
 from dotenv import load_dotenv
 
 load_dotenv()
