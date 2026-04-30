@@ -6,6 +6,7 @@ import pandas as pd
 from sqlalchemy import create_engine, text
 from fastapi import FastAPI
 from pydantic import BaseModel
+from typing import Optional
 from openai import OpenAI
 from dotenv import load_dotenv
 import matplotlib
@@ -53,6 +54,10 @@ def upload_to_imgbb(image_path):
 class QueryRequest(BaseModel):
     prompt: str
 
+class ChartRequest(BaseModel):
+    prompt: str
+    tipo_grafico: Optional[str] = None  # pastel | linea | area | barras | dispersion
+
 def generate_sql(prompt: str, schema: str) -> str:
     response = client.chat.completions.create(
         model="gpt-4o-mini",
@@ -71,7 +76,6 @@ def generate_sql(prompt: str, schema: str) -> str:
     return sql.replace("```sql", "").replace("```", "").strip()
 
 def detect_chart_type(prompt: str) -> str:
-    """Detecta el tipo de gráfico explícitamente antes de generar el código."""
     response = client.chat.completions.create(
         model="gpt-4o-mini",
         messages=[{
@@ -80,12 +84,12 @@ def detect_chart_type(prompt: str) -> str:
                 f"El usuario quiere un gráfico: '{prompt}'\n"
                 f"Responde SOLO con una de estas palabras exactas:\n"
                 f"pastel, linea, area, barras, dispersion\n\n"
-                f"Ejemplos de mapeo:\n"
+                f"Mapeo:\n"
                 f"'pie', 'pastel', 'torta', 'circular' → pastel\n"
-                f"'línea', 'linea', 'tendencia', 'evolución', 'histórico' → linea\n"
-                f"'área', 'area', 'acumulado', 'apilado' → area\n"
-                f"'barra', 'barras', 'columnas', 'comparar' → barras\n"
-                f"'dispersión', 'dispersion', 'scatter', 'correlación' → dispersion\n"
+                f"'línea', 'linea', 'tendencia', 'evolución' → linea\n"
+                f"'área', 'area', 'acumulado' → area\n"
+                f"'barra', 'barras', 'columnas' → barras\n"
+                f"'dispersión', 'scatter', 'correlación' → dispersion\n"
                 f"Si no queda claro, responde: barras"
             )
         }],
@@ -120,7 +124,7 @@ async def ask_texto(request: QueryRequest):
         return {"response": f"Error en el servidor: {str(e)}"}
 
 @app.post("/chart")
-async def ask_grafico(request: QueryRequest):
+async def ask_grafico(request: ChartRequest):
     try:
         charts_dir = os.path.join(os.getcwd(), "exports", "charts")
         os.makedirs(charts_dir, exist_ok=True)
@@ -131,9 +135,14 @@ async def ask_grafico(request: QueryRequest):
         sql = generate_sql(request.prompt, schema)
         df_result = execute_sql(sql)
 
-        # Detectar tipo de gráfico antes de generar el código
-        tipo_grafico = detect_chart_type(request.prompt)
-        print(f"[CHART] Tipo detectado: {tipo_grafico} | Prompt: {request.prompt}")
+        # Si viene tipo_grafico explícito úsalo, sino detectar del prompt
+        tipos_validos = ["pastel", "linea", "area", "barras", "dispersion"]
+        if request.tipo_grafico and request.tipo_grafico.lower() in tipos_validos:
+            tipo_grafico = request.tipo_grafico.lower()
+            print(f"[CHART] Tipo recibido como parámetro: {tipo_grafico}")
+        else:
+            tipo_grafico = detect_chart_type(request.prompt)
+            print(f"[CHART] Tipo detectado del prompt: {tipo_grafico}")
 
         instruccion_tipo = {
             "pastel":     "DEBES usar plt.pie(). USA SOLO plt.pie(), NO plt.bar() ni ningún otro tipo.",
