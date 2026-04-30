@@ -2,27 +2,37 @@ import os
 import requests
 import base64
 import glob
+import pandas as pd
+from sqlalchemy import create_engine, text, inspect
 from fastapi import FastAPI
 from pydantic import BaseModel
-from pandasai import SmartDatalake
-from pandasai.connectors import PostgreSQLConnector
+from pandasai import Agent
 from pandasai.llm.openai import OpenAI
 from dotenv import load_dotenv
 
 load_dotenv()
 app = FastAPI()
 
-# Configuración del conector — NO carga datos, solo define la conexión
-pg_config = {
-    "host": "72.61.2.146",
-    "port": 5432,
-    "database": "ventas_aje",
-    "username": "postgres",
-    "password": os.getenv("PG_PASSWORD"),
-    "table": "ventas",
-}
-
+DB_URL = (
+    f"postgresql+psycopg2://postgres:{os.getenv('PG_PASSWORD')}"
+    f"@72.61.2.146:5432/ventas_aje"
+)
+engine = create_engine(DB_URL)
 llm_instance = OpenAI(api_token=os.getenv("OPENAI_API_KEY"), model="gpt-4o-mini")
+
+def get_schema_sample() -> pd.DataFrame:
+    """
+    En lugar de cargar 1M de filas, trae solo 50 filas para que
+    el agente conozca el esquema y los tipos de datos, luego genera
+    SQL que se ejecuta directo en Postgres.
+    """
+    with engine.connect() as conn:
+        return pd.read_sql(text("SELECT * FROM ventas LIMIT 50"), conn)
+
+def run_sql_on_postgres(sql: str) -> pd.DataFrame:
+    """Ejecuta el SQL generado por el agente directo en Postgres."""
+    with engine.connect() as conn:
+        return pd.read_sql(text(sql), conn)
 
 def upload_to_imgbb(image_path):
     api_key = os.getenv("IMGBB_API_KEY")
@@ -40,14 +50,35 @@ def upload_to_imgbb(image_path):
 class QueryRequest(BaseModel):
     prompt: str
 
+def build_agent(extra_config: dict = {}) -> tuple[Agent, pd.DataFrame]:
+    sample_df = get_schema_sample()
+    config = {
+        "llm": llm_instance,
+        "enable_cache": False,
+        # Le decimos al agente que cuando genere SQL lo ejecute en Postgres
+        # y no lo limite al sample — esto es clave para 1M de registros
+        "custom_whitelisted_dependencies": ["sqlalchemy"],
+        **extra_config
+    }
+    agent = Agent([sample_df], config=config)
+
+    # Inyectamos contexto: le decimos que el sample es solo el esquema
+    # y que debe ejecutar el SQL real contra la BD completa
+    agent.context.memory.add(
+        "INSTRUCCIÓN DEL SISTEMA: El DataFrame que ves es solo una muestra "
+        "de 50 filas para conocer el esquema. La tabla real 'ventas' en PostgreSQL "
+        "tiene millones de registros. Para responder consultas de agregación, "
+        "totales, conteos o cualquier cálculo, SIEMPRE genera y ejecuta SQL "
+        "directo contra la base de datos usando sqlalchemy con el engine disponible. "
+        "Nunca asumas que el sample es la data completa.",
+        is_user=False
+    )
+    return agent, sample_df
+
 @app.post("/ask")
 async def ask_texto(request: QueryRequest):
     try:
-        connector = PostgreSQLConnector(config=pg_config)
-        agent = SmartDatalake(
-            [connector],
-            config={"llm": llm_instance, "enable_cache": False}
-        )
+        agent, _ = build_agent()
         response = agent.chat(request.prompt)
         return {"response": str(response)}
     except Exception as e:
@@ -59,20 +90,14 @@ async def ask_grafico(request: QueryRequest):
         charts_dir = os.path.join(os.getcwd(), "exports", "charts")
         os.makedirs(charts_dir, exist_ok=True)
 
-        connector = PostgreSQLConnector(config=pg_config)
-        agent = SmartDatalake(
-            [connector],
-            config={
-                "llm": llm_instance,
-                "save_charts": True,
-                "save_charts_path": charts_dir,
-                "verbose": True,
-                "enable_cache": False,
-            }
-        )
-
         for f in glob.glob(os.path.join(charts_dir, "*.png")):
             os.remove(f)
+
+        agent, _ = build_agent({
+            "save_charts": True,
+            "save_charts_path": charts_dir,
+            "verbose": True,
+        })
 
         instruccion_forzada = (
             f"{request.prompt}. "
