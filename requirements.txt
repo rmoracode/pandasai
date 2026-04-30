@@ -2,6 +2,7 @@ fastapi
 uvicorn
 pandas
 pandasai>=2.0.0
+pandasai-openai
 sqlalchemy
 psycopg2-binary
 requests
