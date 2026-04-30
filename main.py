@@ -70,6 +70,31 @@ def generate_sql(prompt: str, schema: str) -> str:
     sql = response.choices[0].message.content.strip()
     return sql.replace("```sql", "").replace("```", "").strip()
 
+def detect_chart_type(prompt: str) -> str:
+    """Detecta el tipo de gráfico explícitamente antes de generar el código."""
+    response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{
+            "role": "user",
+            "content": (
+                f"El usuario quiere un gráfico: '{prompt}'\n"
+                f"Responde SOLO con una de estas palabras exactas:\n"
+                f"pastel, linea, area, barras, dispersion\n\n"
+                f"Ejemplos de mapeo:\n"
+                f"'pie', 'pastel', 'torta', 'circular' → pastel\n"
+                f"'línea', 'linea', 'tendencia', 'evolución', 'histórico' → linea\n"
+                f"'área', 'area', 'acumulado', 'apilado' → area\n"
+                f"'barra', 'barras', 'columnas', 'comparar' → barras\n"
+                f"'dispersión', 'dispersion', 'scatter', 'correlación' → dispersion\n"
+                f"Si no queda claro, responde: barras"
+            )
+        }],
+        temperature=0
+    )
+    tipo = response.choices[0].message.content.strip().lower()
+    tipos_validos = ["pastel", "linea", "area", "barras", "dispersion"]
+    return tipo if tipo in tipos_validos else "barras"
+
 @app.post("/ask")
 async def ask_texto(request: QueryRequest):
     try:
@@ -106,24 +131,33 @@ async def ask_grafico(request: QueryRequest):
         sql = generate_sql(request.prompt, schema)
         df_result = execute_sql(sql)
 
+        # Detectar tipo de gráfico antes de generar el código
+        tipo_grafico = detect_chart_type(request.prompt)
+        print(f"[CHART] Tipo detectado: {tipo_grafico} | Prompt: {request.prompt}")
+
+        instruccion_tipo = {
+            "pastel":     "DEBES usar plt.pie(). USA SOLO plt.pie(), NO plt.bar() ni ningún otro tipo.",
+            "linea":      "DEBES usar plt.plot() para líneas. NO uses plt.bar().",
+            "area":       "DEBES usar plt.fill_between() para gráfico de área. NO uses plt.bar().",
+            "barras":     "DEBES usar plt.bar() para barras verticales.",
+            "dispersion": "DEBES usar plt.scatter() para dispersión. NO uses plt.bar().",
+        }[tipo_grafico]
+
         chart_response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{
                 "role": "user",
                 "content": (
-                    f"El usuario quiere un gráfico sobre: \"{request.prompt}\"\n"
+                    f"Genera código Python con matplotlib para un gráfico de tipo: {tipo_grafico.upper()}.\n"
+                    f"INSTRUCCIÓN OBLIGATORIA: {instruccion_tipo}\n\n"
                     f"Datos disponibles:\n{df_result.to_string(index=False)}\n"
                     f"Columnas: {list(df_result.columns)}\n\n"
-                    f"Genera código Python con matplotlib.\n"
                     f"REGLAS:\n"
-                    f"1. Usa plt.pie() para pastel\n"
-                    f"2. Usa plt.plot() para líneas\n"
-                    f"3. Usa plt.fill_between() para área\n"
-                    f"4. Usa plt.bar() para barras\n"
-                    f"5. Guarda en: {charts_dir}/chart.png con plt.savefig()\n"
-                    f"6. Incluye plt.tight_layout() antes de guardar\n"
-                    f"7. NO uses plt.show()\n"
-                    f"8. Responde SOLO con código Python, sin markdown."
+                    f"1. {instruccion_tipo}\n"
+                    f"2. Guarda en: {charts_dir}/chart.png con plt.savefig()\n"
+                    f"3. Incluye plt.tight_layout() antes de guardar\n"
+                    f"4. NO uses plt.show()\n"
+                    f"5. Responde SOLO con código Python puro, sin markdown, sin explicaciones."
                 )
             }],
             temperature=0
