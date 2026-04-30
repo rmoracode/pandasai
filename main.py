@@ -2,40 +2,44 @@ import os
 import requests
 import base64
 import glob
+import pandas as pd
+from sqlalchemy import create_engine, text
 from fastapi import FastAPI
 from pydantic import BaseModel
-from pandasai import SmartDatalake # Cambiado de SmartDataframe
-from pandasai.connectors import PostgreSQLConnector # Conector directo
-from pandasai_openai import OpenAI 
+from pandasai import Agent
+from pandasai.llm.openai import OpenAI
 from dotenv import load_dotenv
 
 load_dotenv()
 app = FastAPI()
 
-# 1. Configuración del Conector Directo a Postgres
-# Esto le dice a PandasAI cómo conectarse sin cargar los datos nosotros
-connector = PostgreSQLConnector(config={
-    "host": "72.61.2.146",
-    "port": 5432,
-    "database": "ventas_aje",
-    "username": "postgres",
-    "password": os.getenv("PG_PASSWORD"),
-    "table": "ventas", # Tabla principal de referencia
-})
+# --- Conexión a PostgreSQL via SQLAlchemy ---
+def get_engine():
+    return create_engine(
+        f"postgresql+psycopg2://postgres:{os.getenv('PG_PASSWORD')}@72.61.2.146:5432/ventas_aje"
+    )
 
-# Instancia del LLM
+def load_dataframe(query: str = "SELECT * FROM ventas LIMIT 50000"):
+    engine = get_engine()
+    with engine.connect() as conn:
+        df = pd.read_sql(text(query), conn)
+    return df
+
+# --- LLM ---
 llm_instance = OpenAI(api_token=os.getenv("OPENAI_API_KEY"), model="gpt-4o-mini")
 
+# --- ImgBB upload ---
 def upload_to_imgbb(image_path):
     api_key = os.getenv("IMGBB_API_KEY")
-    if not api_key: return None
+    if not api_key:
+        return None
     try:
         with open(image_path, "rb") as file:
             url = "https://api.imgbb.com/1/upload"
             payload = {"key": api_key, "image": base64.b64encode(file.read())}
             res = requests.post(url, payload)
-            return res.json().get('data', {}).get('url')
-    except:
+            return res.json().get("data", {}).get("url")
+    except Exception:
         return None
 
 class QueryRequest(BaseModel):
@@ -44,9 +48,11 @@ class QueryRequest(BaseModel):
 @app.post("/ask")
 async def ask_texto(request: QueryRequest):
     try:
-        # Usamos SmartDatalake con el conector en lugar de un DataFrame precargado
-        agent = SmartDatalake([connector], config={"llm": llm_instance, "enable_cache": False})
-        
+        df = load_dataframe()
+        agent = Agent(
+            [df],
+            config={"llm": llm_instance, "enable_cache": False}
+        )
         response = agent.chat(request.prompt)
         return {"response": str(response)}
     except Exception as e:
@@ -58,21 +64,21 @@ async def ask_grafico(request: QueryRequest):
         charts_dir = os.path.join(os.getcwd(), "exports", "charts")
         os.makedirs(charts_dir, exist_ok=True)
 
-        # Usamos SmartDatalake aquí también
-        agent = SmartDatalake(
-            [connector], 
+        df = load_dataframe()
+        agent = Agent(
+            [df],
             config={
                 "llm": llm_instance,
                 "save_charts": True,
                 "save_charts_path": charts_dir,
-                "verbose": True
+                "verbose": True,
+                "enable_cache": False,
             }
         )
 
         for f in glob.glob(os.path.join(charts_dir, "*.png")):
             os.remove(f)
 
-        # Mantenemos tus reglas de gráficos para que no mande barras por error
         instruccion_forzada = (
             f"{request.prompt}. "
             "REGLAS CRÍTICAS: "
@@ -84,17 +90,15 @@ async def ask_grafico(request: QueryRequest):
             "6. PROHIBIDO usar plt.bar() si se pidió pastel o líneas. "
             "7. Usa matplotlib y guarda como .png."
         )
-        
+
         agent.chat(instruccion_forzada)
-        
+
         generated_files = glob.glob(os.path.join(charts_dir, "*.png"))
         if generated_files:
             latest_file = max(generated_files, key=os.path.getctime)
             url = upload_to_imgbb(latest_file)
             return {"chart_url": url, "detail": "Gráfico generado con éxito."}
-
         return {"chart_url": None, "detail": "La IA no pudo generar la imagen."}
-
     except Exception as e:
         return {"chart_url": None, "error": str(e)}
 
