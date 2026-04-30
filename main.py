@@ -3,7 +3,7 @@ import requests
 import base64
 import glob
 import pandas as pd
-from sqlalchemy import create_engine, text, inspect
+from sqlalchemy import create_engine, text
 from fastapi import FastAPI
 from pydantic import BaseModel
 from pandasai import Agent
@@ -20,19 +20,22 @@ DB_URL = (
 engine = create_engine(DB_URL)
 llm_instance = OpenAI(api_token=os.getenv("OPENAI_API_KEY"), model="gpt-4o-mini")
 
-def get_schema_sample() -> pd.DataFrame:
-    """
-    En lugar de cargar 1M de filas, trae solo 50 filas para que
-    el agente conozca el esquema y los tipos de datos, luego genera
-    SQL que se ejecuta directo en Postgres.
-    """
+def execute_sql(query: str) -> pd.DataFrame:
+    """Ejecuta SQL directo en Postgres y retorna DataFrame."""
     with engine.connect() as conn:
-        return pd.read_sql(text("SELECT * FROM ventas LIMIT 50"), conn)
+        return pd.read_sql(text(query), conn)
 
-def run_sql_on_postgres(sql: str) -> pd.DataFrame:
-    """Ejecuta el SQL generado por el agente directo en Postgres."""
+def get_schema_info() -> str:
+    """Obtiene columnas y tipos de la tabla ventas."""
     with engine.connect() as conn:
-        return pd.read_sql(text(sql), conn)
+        result = conn.execute(text("""
+            SELECT column_name, data_type 
+            FROM information_schema.columns 
+            WHERE table_name = 'ventas'
+            ORDER BY ordinal_position
+        """))
+        cols = result.fetchall()
+    return "\n".join([f"- {col[0]} ({col[1]})" for col in cols])
 
 def upload_to_imgbb(image_path):
     api_key = os.getenv("IMGBB_API_KEY")
@@ -50,43 +53,136 @@ def upload_to_imgbb(image_path):
 class QueryRequest(BaseModel):
     prompt: str
 
-def build_agent(extra_config: dict = {}) -> Agent:
-    sample_df = get_schema_sample()
-    config = {
-        "llm": llm_instance,
-        "enable_cache": False,
-        "description": (
-            "Eres un analista de datos. El DataFrame que ves es solo una muestra "
-            "de 50 filas para conocer el esquema. La tabla real 'ventas' en PostgreSQL "
-            "tiene millones de registros. Para responder consultas de agregación, "
-            "totales, conteos o cualquier cálculo, genera SQL eficiente que opere "
-            "sobre los datos disponibles."
-        ),
-        **extra_config
-    }
-    return Agent([sample_df], config=config)
+def smart_query(prompt: str) -> str:
+    """
+    Usa el LLM para generar SQL, lo ejecuta en Postgres,
+    y luego usa el LLM de nuevo para responder en lenguaje natural.
+    """
+    schema = get_schema_info()
 
-    # Inyectamos contexto: le decimos que el sample es solo el esquema
-    # y que debe ejecutar el SQL real contra la BD completa
-    agent.context.memory.add(
-        "INSTRUCCIÓN DEL SISTEMA: El DataFrame que ves es solo una muestra "
-        "de 50 filas para conocer el esquema. La tabla real 'ventas' en PostgreSQL "
-        "tiene millones de registros. Para responder consultas de agregación, "
-        "totales, conteos o cualquier cálculo, SIEMPRE genera y ejecuta SQL "
-        "directo contra la base de datos usando sqlalchemy con el engine disponible. "
-        "Nunca asumas que el sample es la data completa.",
-        is_user=False
+    # Paso 1: pedir al LLM que genere el SQL
+    sql_prompt = f"""Eres un experto en SQL y PostgreSQL.
+Tienes una tabla llamada 'ventas' con las siguientes columnas:
+{schema}
+
+El usuario pregunta: "{prompt}"
+
+Genera ÚNICAMENTE el SQL necesario para responder esta pregunta.
+- Usa agregaciones (SUM, COUNT, AVG, GROUP BY) cuando sea necesario
+- NO uses LIMIT a menos que el usuario lo pida
+- Responde SOLO con el SQL, sin explicaciones, sin markdown, sin comillas
+"""
+
+    from openai import OpenAI as OpenAIClient
+    client = OpenAIClient(api_key=os.getenv("OPENAI_API_KEY"))
+
+    sql_response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": sql_prompt}],
+        temperature=0
     )
-    return agent, sample_df
+    sql = sql_response.choices[0].message.content.strip()
+
+    # Limpiar el SQL por si acaso viene con markdown
+    sql = sql.replace("```sql", "").replace("```", "").strip()
+
+    # Paso 2: ejecutar el SQL en Postgres
+    df_result = execute_sql(sql)
+
+    # Paso 3: pedir al LLM que responda en lenguaje natural con los resultados
+    answer_prompt = f"""El usuario preguntó: "{prompt}"
+
+Se ejecutó esta consulta SQL:
+{sql}
+
+Y el resultado fue:
+{df_result.to_string(index=False)}
+
+Responde al usuario de forma clara y concisa en español, presentando los datos de forma ordenada."""
+
+    answer_response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": answer_prompt}],
+        temperature=0.3
+    )
+    return answer_response.choices[0].message.content.strip()
+
+
+def smart_chart(prompt: str, charts_dir: str) -> str | None:
+    """Genera SQL, ejecuta, luego crea el gráfico con matplotlib."""
+    schema = get_schema_info()
+
+    sql_prompt = f"""Eres un experto en SQL y PostgreSQL.
+Tienes una tabla llamada 'ventas' con las siguientes columnas:
+{schema}
+
+El usuario quiere un gráfico sobre: "{prompt}"
+
+Genera ÚNICAMENTE el SQL para obtener los datos necesarios para ese gráfico.
+- Usa agregaciones apropiadas (SUM, COUNT, AVG, GROUP BY)
+- Retorna máximo 2-3 columnas: una para el eje X (categoría) y una o más para el eje Y (valores)
+- Responde SOLO con el SQL, sin explicaciones, sin markdown
+"""
+
+    from openai import OpenAI as OpenAIClient
+    client = OpenAIClient(api_key=os.getenv("OPENAI_API_KEY"))
+
+    sql_response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": sql_prompt}],
+        temperature=0
+    )
+    sql = sql_response.choices[0].message.content.strip()
+    sql = sql.replace("```sql", "").replace("```", "").strip()
+
+    df_result = execute_sql(sql)
+
+    # Pedir al LLM el código matplotlib
+    chart_prompt = f"""El usuario quiere un gráfico sobre: "{prompt}"
+
+Los datos disponibles son:
+{df_result.to_string(index=False)}
+
+Columnas: {list(df_result.columns)}
+
+Genera código Python con matplotlib para crear este gráfico.
+REGLAS:
+1. Usa plt.pie() para gráficos de pastel
+2. Usa plt.plot() para líneas
+3. Usa plt.fill_between() para área
+4. Usa plt.bar() para barras
+5. Guarda el gráfico en: {charts_dir}/chart.png usando plt.savefig()
+6. Incluye plt.tight_layout() antes de guardar
+7. NO uses plt.show()
+8. Responde SOLO con el código Python, sin markdown
+"""
+
+    chart_response = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": chart_prompt}],
+        temperature=0
+    )
+    chart_code = chart_response.choices[0].message.content.strip()
+    chart_code = chart_code.replace("```python", "").replace("```", "").strip()
+
+    # Ejecutar el código del gráfico
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    exec(chart_code, {"plt": plt, "df": df_result, "pd": pd})
+
+    chart_path = os.path.join(charts_dir, "chart.png")
+    return chart_path if os.path.exists(chart_path) else None
+
 
 @app.post("/ask")
 async def ask_texto(request: QueryRequest):
     try:
-        agent = build_agent()
-        response = agent.chat(request.prompt)
-        return {"response": str(response)}
+        response = smart_query(request.prompt)
+        return {"response": response}
     except Exception as e:
         return {"response": f"Error en el servidor: {str(e)}"}
+
 
 @app.post("/chart")
 async def ask_grafico(request: QueryRequest):
@@ -97,34 +193,15 @@ async def ask_grafico(request: QueryRequest):
         for f in glob.glob(os.path.join(charts_dir, "*.png")):
             os.remove(f)
 
-        agent = build_agent({
-            "save_charts": True,
-            "save_charts_path": charts_dir,
-            "verbose": True,
-        })
+        chart_path = smart_chart(request.prompt, charts_dir)
 
-        instruccion_forzada = (
-            f"{request.prompt}. "
-            "REGLAS CRÍTICAS: "
-            "1. IDENTIFICA el tipo de gráfico solicitado. "
-            "2. Si pide 'PASTEL', usa plt.pie(). "
-            "3. Si pide 'LÍNEAS', usa plt.plot(). "
-            "4. Si pide 'ÁREA', usa plt.fill_between() o df.plot.area(). "
-            "5. Si pide 'BARRAS', usa plt.bar(). "
-            "6. PROHIBIDO usar plt.bar() si se pidió pastel o líneas. "
-            "7. Usa matplotlib y guarda como .png."
-        )
-
-        agent.chat(instruccion_forzada)
-
-        generated_files = glob.glob(os.path.join(charts_dir, "*.png"))
-        if generated_files:
-            latest_file = max(generated_files, key=os.path.getctime)
-            url = upload_to_imgbb(latest_file)
+        if chart_path:
+            url = upload_to_imgbb(chart_path)
             return {"chart_url": url, "detail": "Gráfico generado con éxito."}
         return {"chart_url": None, "detail": "La IA no pudo generar la imagen."}
     except Exception as e:
         return {"chart_url": None, "error": str(e)}
+
 
 if __name__ == "__main__":
     import uvicorn
