@@ -50,17 +50,21 @@ def upload_to_imgbb(image_path):
 class QueryRequest(BaseModel):
     prompt: str
 
-def build_agent(extra_config: dict = {}) -> tuple[Agent, pd.DataFrame]:
+def build_agent(extra_config: dict = {}) -> Agent:
     sample_df = get_schema_sample()
     config = {
         "llm": llm_instance,
         "enable_cache": False,
-        # Le decimos al agente que cuando genere SQL lo ejecute en Postgres
-        # y no lo limite al sample — esto es clave para 1M de registros
-        "custom_whitelisted_dependencies": ["sqlalchemy"],
+        "description": (
+            "Eres un analista de datos. El DataFrame que ves es solo una muestra "
+            "de 50 filas para conocer el esquema. La tabla real 'ventas' en PostgreSQL "
+            "tiene millones de registros. Para responder consultas de agregación, "
+            "totales, conteos o cualquier cálculo, genera SQL eficiente que opere "
+            "sobre los datos disponibles."
+        ),
         **extra_config
     }
-    agent = Agent([sample_df], config=config)
+    return Agent([sample_df], config=config)
 
     # Inyectamos contexto: le decimos que el sample es solo el esquema
     # y que debe ejecutar el SQL real contra la BD completa
