@@ -82,7 +82,7 @@ def build_agent(extra_config: dict = {}) -> Agent:
 @app.post("/ask")
 async def ask_texto(request: QueryRequest):
     try:
-        agent, _ = build_agent()
+        agent = build_agent()
         response = agent.chat(request.prompt)
         return {"response": str(response)}
     except Exception as e:
@@ -97,7 +97,7 @@ async def ask_grafico(request: QueryRequest):
         for f in glob.glob(os.path.join(charts_dir, "*.png")):
             os.remove(f)
 
-        agent, _ = build_agent({
+        agent = build_agent({
             "save_charts": True,
             "save_charts_path": charts_dir,
             "verbose": True,
