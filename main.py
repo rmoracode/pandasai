@@ -2,33 +2,28 @@ import os
 import requests
 import base64
 import glob
-import pandas as pd
-from sqlalchemy import create_engine, text
 from fastapi import FastAPI
 from pydantic import BaseModel
-from pandasai import Agent
+from pandasai import SmartDatalake
+from pandasai.connectors import PostgreSQLConnector
 from pandasai.llm.openai import OpenAI
 from dotenv import load_dotenv
 
 load_dotenv()
 app = FastAPI()
 
-# --- Conexión a PostgreSQL via SQLAlchemy ---
-def get_engine():
-    return create_engine(
-        f"postgresql+psycopg2://postgres:{os.getenv('PG_PASSWORD')}@72.61.2.146:5432/ventas_aje"
-    )
+# Configuración del conector — NO carga datos, solo define la conexión
+pg_config = {
+    "host": "72.61.2.146",
+    "port": 5432,
+    "database": "ventas_aje",
+    "username": "postgres",
+    "password": os.getenv("PG_PASSWORD"),
+    "table": "ventas",
+}
 
-def load_dataframe(query: str = "SELECT * FROM ventas LIMIT 50000"):
-    engine = get_engine()
-    with engine.connect() as conn:
-        df = pd.read_sql(text(query), conn)
-    return df
-
-# --- LLM ---
 llm_instance = OpenAI(api_token=os.getenv("OPENAI_API_KEY"), model="gpt-4o-mini")
 
-# --- ImgBB upload ---
 def upload_to_imgbb(image_path):
     api_key = os.getenv("IMGBB_API_KEY")
     if not api_key:
@@ -48,9 +43,9 @@ class QueryRequest(BaseModel):
 @app.post("/ask")
 async def ask_texto(request: QueryRequest):
     try:
-        df = load_dataframe()
-        agent = Agent(
-            [df],
+        connector = PostgreSQLConnector(config=pg_config)
+        agent = SmartDatalake(
+            [connector],
             config={"llm": llm_instance, "enable_cache": False}
         )
         response = agent.chat(request.prompt)
@@ -64,9 +59,9 @@ async def ask_grafico(request: QueryRequest):
         charts_dir = os.path.join(os.getcwd(), "exports", "charts")
         os.makedirs(charts_dir, exist_ok=True)
 
-        df = load_dataframe()
-        agent = Agent(
-            [df],
+        connector = PostgreSQLConnector(config=pg_config)
+        agent = SmartDatalake(
+            [connector],
             config={
                 "llm": llm_instance,
                 "save_charts": True,
