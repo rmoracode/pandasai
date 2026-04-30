@@ -7,7 +7,7 @@ from sqlalchemy import create_engine, text, inspect
 from fastapi import FastAPI
 from pydantic import BaseModel
 from pandasai import Agent
-from pandasai.llm.openai import OpenAI
+from pandasai_openai import OpenAI
 from dotenv import load_dotenv
 
 load_dotenv()
