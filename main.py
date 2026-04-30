@@ -1,30 +1,29 @@
 import os
-import pandas as pd
 import requests
 import base64
 import glob
 from fastapi import FastAPI
 from pydantic import BaseModel
-from pandasai import SmartDataframe 
+from pandasai import SmartDatalake # Cambiado de SmartDataframe
+from pandasai.connectors import PostgreSQLConnector # Conector directo
 from pandasai_openai import OpenAI 
-from sqlalchemy import create_engine
 from dotenv import load_dotenv
 
 load_dotenv()
 app = FastAPI()
 
-# 1. Configuración del Motor de Base de Datos (SQLAlchemy)
-user = "postgres"
-password = os.getenv("PG_PASSWORD")
-host = "72.61.2.146"
-port = "5432"
-db = "ventas_aje"
+# 1. Configuración del Conector Directo a Postgres
+# Esto le dice a PandasAI cómo conectarse sin cargar los datos nosotros
+connector = PostgreSQLConnector(config={
+    "host": "72.61.2.146",
+    "port": 5432,
+    "database": "ventas_aje",
+    "username": "postgres",
+    "password": os.getenv("PG_PASSWORD"),
+    "table": "ventas", # Tabla principal de referencia
+})
 
-# Creamos la URL de conexión robusta
-db_url = f"postgresql://{user}:{password}@{host}:{port}/{db}"
-engine = create_engine(db_url)
-
-# Instancia del LLM (GPT-4o-mini es excelente para esto)
+# Instancia del LLM
 llm_instance = OpenAI(api_token=os.getenv("OPENAI_API_KEY"), model="gpt-4o-mini")
 
 def upload_to_imgbb(image_path):
@@ -45,12 +44,8 @@ class QueryRequest(BaseModel):
 @app.post("/ask")
 async def ask_texto(request: QueryRequest):
     try:
-        # PRECARGA CRÍTICA: Traemos los datos de la tabla 'ventas' a un DataFrame de Pandas
-        # Esto soluciona el ValueError: Invalid input data
-        df = pd.read_sql("SELECT * FROM ventas", engine)
-        
-        # Inicializamos el agente con el DataFrame ya cargado
-        agent = SmartDataframe(df, config={"llm": llm_instance, "enable_cache": False})
+        # Usamos SmartDatalake con el conector en lugar de un DataFrame precargado
+        agent = SmartDatalake([connector], config={"llm": llm_instance, "enable_cache": False})
         
         response = agent.chat(request.prompt)
         return {"response": str(response)}
@@ -63,11 +58,9 @@ async def ask_grafico(request: QueryRequest):
         charts_dir = os.path.join(os.getcwd(), "exports", "charts")
         os.makedirs(charts_dir, exist_ok=True)
 
-        # Precarga de datos para asegurar el flujo de gráficos
-        df = pd.read_sql("SELECT * FROM ventas", engine)
-
-        agent = SmartDataframe(
-            df, 
+        # Usamos SmartDatalake aquí también
+        agent = SmartDatalake(
+            [connector], 
             config={
                 "llm": llm_instance,
                 "save_charts": True,
@@ -76,26 +69,25 @@ async def ask_grafico(request: QueryRequest):
             }
         )
 
-        # Limpieza de gráficos anteriores
         for f in glob.glob(os.path.join(charts_dir, "*.png")):
             os.remove(f)
 
-        # Forzamos la instrucción técnica para matplotlib
+        # Mantenemos tus reglas de gráficos para que no mande barras por error
         instruccion_forzada = (
             f"{request.prompt}. "
-            "REGLAS CRÍTICAS DE PROGRAMACIÓN: "
-            "1. IDENTIFICA el tipo de gráfico solicitado en el prompt anterior. "
-            "2. Si el usuario pide 'PASTEL' o 'PIE', debes usar OBLIGATORIAMENTE plt.pie(). "
-            "3. Si el usuario pide 'LÍNEAS' o 'LINE', debes usar OBLIGATORIAMENTE plt.plot(). "
-            "4. Si el usuario pide 'ÁREA', debes usar OBLIGATORIAMENTE plt.fill_between() o df.plot.area(). "
-            "5. Si el usuario pide 'BARRAS' o 'BAR', usa plt.bar(). "
-            "6. PROHIBIDO usar plt.bar() si el usuario pidió 'pastel' o 'líneas'. "
-            "7. Genera el gráfico usando matplotlib y guarda como .png."
+            "REGLAS CRÍTICAS: "
+            "1. IDENTIFICA el tipo de gráfico solicitado. "
+            "2. Si pide 'PASTEL', usa plt.pie(). "
+            "3. Si pide 'LÍNEAS', usa plt.plot(). "
+            "4. Si pide 'ÁREA', usa plt.fill_between() o df.plot.area(). "
+            "5. Si pide 'BARRAS', usa plt.bar(). "
+            "6. PROHIBIDO usar plt.bar() si se pidió pastel o líneas. "
+            "7. Usa matplotlib y guarda como .png."
         )
+        
         agent.chat(instruccion_forzada)
         
         generated_files = glob.glob(os.path.join(charts_dir, "*.png"))
-        
         if generated_files:
             latest_file = max(generated_files, key=os.path.getctime)
             url = upload_to_imgbb(latest_file)
@@ -108,5 +100,4 @@ async def ask_grafico(request: QueryRequest):
 
 if __name__ == "__main__":
     import uvicorn
-    # Railway usa la variable de entorno PORT
     uvicorn.run(app, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
