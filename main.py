@@ -131,6 +131,11 @@ async def ask_grafico(request: ChartRequest):
         for f in glob.glob(os.path.join(charts_dir, "*.png")):
             os.remove(f)
 
+        # ✅ Limpiar estado de matplotlib antes de cada gráfico
+        plt.close("all")
+        plt.clf()
+        plt.cla()
+
         schema = get_schema_info()
         sql = generate_sql(request.prompt, schema)
         df_result = execute_sql(sql)
@@ -161,18 +166,22 @@ async def ask_grafico(request: ChartRequest):
                     f"INSTRUCCIÓN OBLIGATORIA: {instruccion_tipo}\n\n"
                     f"Datos disponibles:\n{df_result.to_string(index=False)}\n"
                     f"Columnas: {list(df_result.columns)}\n\n"
-                    f"REGLAS:\n"
+                    f"REGLAS ESTRICTAS:\n"
                     f"1. {instruccion_tipo}\n"
-                    f"2. Guarda en: {charts_dir}/chart.png con plt.savefig()\n"
-                    f"3. Incluye plt.tight_layout() antes de guardar\n"
-                    f"4. NO uses plt.show()\n"
-                    f"5. Responde SOLO con código Python puro, sin markdown, sin explicaciones."
+                    f"2. La primera línea del código DEBE ser: fig, ax = plt.subplots()\n"
+                    f"3. Usa 'ax' para todos los elementos del gráfico (ax.bar, ax.pie, ax.plot, etc.)\n"
+                    f"4. Guarda en: {charts_dir}/chart.png con plt.savefig()\n"
+                    f"5. Incluye plt.tight_layout() antes de guardar\n"
+                    f"6. NO uses plt.show()\n"
+                    f"7. Responde SOLO con código Python puro, sin markdown, sin explicaciones."
                 )
             }],
             temperature=0
         )
         chart_code = chart_response.choices[0].message.content.strip()
         chart_code = chart_code.replace("```python", "").replace("```", "").strip()
+
+        print(f"[CHART] Código generado:\n{chart_code}")
 
         exec(chart_code, {"plt": plt, "df": df_result, "pd": pd})
 
